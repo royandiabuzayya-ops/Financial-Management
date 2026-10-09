@@ -328,6 +328,22 @@ table.print-cal td.othermonth{background:#f7f7f7;}
 .tanggal-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
 .tanggal-row input{flex:1;}
 .anggaran-cols{display:grid;grid-template-columns:1fr 1.3fr;gap:18px;align-items:start;}
+.anggaran-cols.grid-mode{grid-template-columns:1fr;}
+.anggaran-cols.grid-mode > div:first-child{display:none;}
+#tblProgramAnggaran{min-width:680px;}
+#tblProgramAnggaran td{border:1px solid var(--grid);}
+#tblProgramAnggaran th:nth-child(1){width:44px;text-align:center;}
+#tblProgramAnggaran th:nth-child(3){width:84px;}
+#tblProgramAnggaran th:nth-child(4){width:104px;}
+#tblProgramAnggaran th:nth-child(5){width:132px;}
+#tblProgramAnggaran th:nth-child(6){width:132px;}
+#tblProgramAnggaran th:nth-child(7){width:44px;}
+#tblProgramAnggaran td:has(input){padding:0;}
+#tblProgramAnggaran td input{border-radius:0;padding:8px 7px;}
+#tblProgramAnggaran td input:focus{box-shadow:inset 0 0 0 2px var(--series-1);}
+#tblProgramAnggaran tr.bg-new td{background:#fafcff;}
+#tblProgramAnggaran tr.bg-new input::placeholder{color:var(--text-muted);font-style:italic;}
+#tblProgramAnggaran input.bg-bad{background:#fff4f4;box-shadow:inset 0 0 0 1px #e08a8a;}
 @media (max-width:760px){ .anggaran-cols{grid-template-columns:1fr;} }
 .admin-panel{background:#f7f9fc;border:1px solid var(--border);border-radius:10px;padding:14px;margin-top:16px;}
 .admin-panel h3{font-size:12.5px;margin:0 0 10px;font-weight:700;}
@@ -1185,7 +1201,7 @@ html.user-logged-in .app-shell.hidden-until-login{display:flex !important;}
     <div class="form-grid" style="grid-template-columns:1fr;">
       <div class="field"><label>Nama Program</label><input id="mpNamaProgram" placeholder="cth: Peringatan Hari Kemerdekaan"></div>
       <div class="field"><label>Deskripsi</label><textarea id="mpDeskripsi" rows="3" placeholder="Deskripsi singkat program"></textarea></div>
-      <div class="field"><label>Sumber Dana</label><select id="mpSumberDana"></select></div>
+      <div class="field"><label>Sumber Dana</label><select id="mpSumberDana"></select><small id="mpSumberHint" style="display:none;margin-top:4px;color:var(--text-muted);font-size:12px;"></small></div>
       <div class="field">
         <label>Tanggal Pelaksanaan</label>
         <div id="mpTanggalList"></div>
@@ -1236,8 +1252,9 @@ html.user-logged-in .app-shell.hidden-until-login{display:flex !important;}
         </div>
       </div>
       <div>
+        <div class="badge-note" id="paGridHint" style="display:none;margin-bottom:8px;">&#128161; Ketik langsung di tabel: <b>Enter</b> = baris berikutnya, <b>Tab</b> = kolom berikutnya, <b>&uarr;&darr;</b> di kolom angka. Bisa <b>tempel (Ctrl+V) banyak baris sekaligus dari Excel/Google Sheets</b> dengan urutan kolom Uraian, Volume, Satuan, Harga.</div>
         <div class="table-scroll">
-          <table class="datatable narrow" id="tblProgramAnggaran">
+          <table class="datatable narrow budget-grid" id="tblProgramAnggaran">
             <thead><tr><th>No</th><th>Uraian</th><th>Vol</th><th>Satuan</th><th>Harga</th><th>Total</th><th></th></tr></thead>
             <tbody></tbody><tfoot></tfoot>
           </table>
@@ -3506,6 +3523,34 @@ function renderMpTanggalList(){
   }));
 }
 document.getElementById("mpAddTanggal").addEventListener("click", ()=>{ mpDatesDraft.push(""); renderMpTanggalList(); });
+/* Pindahkan program ke sumber dana lain. HANYA Admin, HANYA selama program belum
+   Disetujui/Ditolak, dan HANYA bila belum ada realisasi / serah terima / pengembalian
+   dana (supaya BKU dan saldo per sumber dana tidak ikut kacau). Mengembalikan true
+   bila program sudah berada di sumber dana tujuan. */
+function moveProgramSumber(prog, newKey){
+  if(currentUser.role !== "Admin"){ alert("Hanya Admin yang dapat mengubah sumber dana program."); return false; }
+  if(!SUMBER_KEYS.includes(newKey)) return false;
+  const found = findProgramById(prog.id);
+  if(!found) return false;
+  const oldKey = found.key;
+  if(oldKey === newKey){ prog.sumberDana = newKey; return true; }
+  if(prog.status !== PROGRAM_STATUS.MENUNGGU && prog.status !== PROGRAM_STATUS.PERBAIKAN){
+    alert("Sumber dana hanya dapat diubah selama program belum Disetujui atau Ditolak.");
+    return false;
+  }
+  if((prog.realisasi||[]).length || (prog.serahTerima||[]).length || (prog.pengembalianUangMuka||[]).length){
+    alert("Sumber dana tidak dapat diubah karena program ini sudah memiliki catatan realisasi/serah terima/pengembalian dana.");
+    return false;
+  }
+  if(!confirm(`Pindahkan program "${prog.namaProgram||"(tanpa nama)"}" dari ${SUMBER_META[oldKey].label} ke ${SUMBER_META[newKey].label}?\n\nSeluruh item anggaran program ini ikut berpindah ke sumber dana baru.`)) return false;
+  const idx = state.program[oldKey].findIndex(p=>p.id===prog.id);
+  if(idx >= 0) state.program[oldKey].splice(idx, 1);
+  prog.sumberDana = newKey;
+  state.program[newKey].push(prog);
+  currentProgramKey = newKey;
+  try { localStorage.setItem("keuanganSekolahProgramKey", currentProgramKey); } catch(e){}
+  return true;
+}
 function openProgramModal(prog){
   const isAdmin = currentUser.role === "Admin";
   if(prog){
@@ -3524,8 +3569,14 @@ function openProgramModal(prog){
   document.getElementById("mpDeskripsi").value = prog ? prog.deskripsi : "";
   const selSumber = document.getElementById("mpSumberDana");
   selSumber.innerHTML = SUMBER_KEYS.map(k=>`<option value="${k}">${SUMBER_META[k].label}</option>`).join("");
-  selSumber.value = prog ? prog.sumberDana : currentProgramKey;
-  selSumber.disabled = !!prog;
+  selSumber.value = prog ? getProgramSumberKey(prog) : currentProgramKey;
+  selSumber.disabled = !!prog && !isAdmin;
+  const hint = document.getElementById("mpSumberHint");
+  if(hint){
+    hint.style.display = prog ? "" : "none";
+    hint.textContent = isAdmin ? "Admin dapat mengubah sumber dana selama program belum disetujui."
+                               : "Sumber dana hanya dapat diubah oleh Admin.";
+  }
   mpDatesDraft = (prog && prog.tanggal && prog.tanggal.length) ? [...prog.tanggal] : [""];
   renderMpTanggalList();
   openModal("modal-program");
@@ -3585,6 +3636,9 @@ document.getElementById("mpSimpan").addEventListener("click", ()=>{
         prog.budgets = (prog.budgets||[]).filter(b=> !removedDates.includes(b.tanggal));
       }
     }
+    if(isAdmin && sumberDana !== found.key){
+      if(!moveProgramSumber(prog, sumberDana)) return;
+    }
     prog.namaProgram = namaProgram; prog.deskripsi = deskripsi; prog.tanggal = tanggal;
     syncProgramRealisasi(prog);
   }
@@ -3614,7 +3668,7 @@ function renderProgramAnggaranModal(){
   const prog = currentAnggaranProg;
   if(!prog) return;
   document.getElementById("paTitle").textContent = `Kelola Anggaran — ${prog.namaProgram||"(tanpa nama)"}`;
-  document.getElementById("paSub").textContent = `Pengaju: ${prog.namaPengaju||"-"} · Status: ${prog.status}`;
+  document.getElementById("paSub").textContent = `Pengaju: ${prog.namaPengaju||"-"} · Sumber dana: ${SUMBER_META[getProgramSumberKey(prog)].label} · Status: ${prog.status}`;
   document.getElementById("paBtnCetakProposal").disabled = !(prog.budgets && prog.budgets.length>0);
 
   const tglSel = document.getElementById("paTanggalFilter");
@@ -3641,6 +3695,10 @@ function renderProgramAnggaranModal(){
   document.querySelectorAll("#modal-program-anggaran .anggaran-cols input, #modal-program-anggaran .anggaran-cols select").forEach(el=> el.disabled = !editable);
   document.getElementById("paBtnSimpanItem").style.display = editable? "" : "none";
 
+  document.querySelector("#modal-program-anggaran .anggaran-cols").classList.add("grid-mode");
+  const gridHint = document.getElementById("paGridHint");
+  if(gridHint) gridHint.style.display = editable ? "" : "none";
+  if(editable){ renderBudgetGrid(prog); renderAdminPanel(); return; }
   const budgets = (prog.budgets||[]).filter(b=>b.tanggal===currentAnggaranTanggal);
   const tbody = document.querySelector("#tblProgramAnggaran tbody");
   tbody.innerHTML = budgets.map((b,i)=>`
@@ -3678,6 +3736,203 @@ function renderProgramAnggaranModal(){
   }));
 
   renderAdminPanel();
+}
+/* =========================================================================
+   TABEL KEBUTUHAN ANGGARAN (gaya Excel)
+   Setiap sel langsung bisa diketik; baris kosong di paling bawah otomatis
+   menjadi item baru begitu diisi. Enter/Tab/panah untuk berpindah sel, dan
+   beberapa baris dari Excel/Google Sheets bisa ditempel sekaligus.
+   ========================================================================= */
+const BG_FIELDS = ["uraian","volume","satuan","harga"];
+
+/* Angka dari teks bebas: "2,5" "1.500" "Rp 1.500.000,00" "1,500,000". Negatif -> 0. */
+function parseAngka(s){
+  s = String(s??"").replace(/rp\.?/ig,"").replace(/\s/g,"");
+  if(!s) return 0;
+  if(s.includes(",") && s.includes(".")){
+    s = s.lastIndexOf(",") > s.lastIndexOf(".") ? s.replace(/\./g,"").replace(",",".") : s.replace(/,/g,"");
+  } else if(s.includes(",")){
+    s = /^\d{1,3}(,\d{3}){2,}$/.test(s) ? s.replace(/,/g,"") : s.replace(",",".");
+  } else if(s.includes(".")){
+    if(/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g,"");
+  }
+  const n = Number(s.replace(/[^\d.]/g,""));
+  return isFinite(n) && n > 0 ? n : 0;
+}
+function bgRowsForDate(prog){ return (prog.budgets||[]).filter(b=>b.tanggal===currentAnggaranTanggal); }
+function bgRowOf(tr, prog){
+  const id = tr && tr.dataset ? tr.dataset.id : "";
+  return id ? (prog.budgets||[]).find(b=>String(b.id)===id) || null : null;
+}
+function bgRowHtml(b, no){
+  const tot = b ? (Number(b.volume)||0)*(Number(b.harga)||0) : 0;
+  const bad = b && !String(b.uraian||"").trim();
+  return `<tr class="bg-row${b?"":" bg-new"}" data-id="${b?b.id:""}">
+    <td class="bg-no" style="text-align:center;color:var(--text-muted);">${b?no:"+"}</td>
+    <td><input data-f="uraian" class="${bad?"bg-bad":""}" value="${escapeHtml(b?b.uraian:"")}" placeholder="${b?"":"Ketik kebutuhan baru di sini…"}" autocomplete="off"></td>
+    <td class="num"><input data-f="volume" inputmode="decimal" value="${b&&b.volume?escapeHtml(String(b.volume).replace(".",",")):""}" autocomplete="off"></td>
+    <td><input data-f="satuan" value="${escapeHtml(b?b.satuan:"")}" autocomplete="off"></td>
+    <td class="num"><input data-f="harga" value="${b?formatRibuan(b.harga):""}" autocomplete="off"></td>
+    <td class="computed bg-total">${b?rp(tot):""}</td>
+    <td style="text-align:center;">${b?`<button class="row-del" type="button" data-bgdel tabindex="-1" title="Hapus baris">&times;</button>`:""}</td>
+  </tr>`;
+}
+/* Riwayat uraian dari semua program: dipakai mengisi otomatis satuan & harga. */
+function bgHistoryMap(){
+  const m = new Map();
+  SUMBER_KEYS.forEach(k=> (state.program[k]||[]).forEach(p=> (p.budgets||[]).forEach(b=>{
+    const u = String(b.uraian||"").trim();
+    if(u && (String(b.satuan||"").trim() || Number(b.harga))) m.set(u.toLowerCase(), { satuan:b.satuan||"", harga:Number(b.harga)||0 });
+  })));
+  return m;
+}
+function bgApply(row, f, val, fromPaste){
+  if(f==="uraian") row.uraian = String(val);
+  else if(f==="volume") row.volume = parseAngka(val);
+  else if(f==="satuan") row.satuan = String(val);
+  else if(f==="harga") row.harga = fromPaste ? Math.round(parseAngka(val)) : parseRibuan(val);
+}
+function bgUpdateTotals(prog){
+  document.querySelector("#tblProgramAnggaran tfoot").innerHTML =
+    `<tr><td colspan="5" style="text-align:right">TOTAL TANGGAL INI</td><td class="computed">${rp(programBudgetTotalForDate(prog, currentAnggaranTanggal))}</td><td></td></tr>`;
+  document.getElementById("paGrandTotal").textContent = rp(programBudgetTotal(prog));
+}
+function bgRenumber(tbody){
+  let n = 0;
+  tbody.querySelectorAll("tr.bg-row:not(.bg-new)").forEach(tr=>{ tr.querySelector(".bg-no").textContent = ++n; });
+}
+function bgFocus(tbody, rowIdx, field){
+  const trs = tbody.querySelectorAll("tr.bg-row");
+  const tr = trs[Math.max(0, Math.min(rowIdx, trs.length-1))];
+  const inp = tr && tr.querySelector(`input[data-f="${field}"]`);
+  if(inp) inp.focus();
+}
+function renderBudgetGrid(prog, focusSpec){
+  const before = (prog.budgets||[]).length;
+  prog.budgets = (prog.budgets||[]).filter(b=> String(b.uraian||"").trim() || String(b.satuan||"").trim() || Number(b.volume) || Number(b.harga));
+  if(prog.budgets.length !== before) saveStateToLocalStorage();
+  const tbody = document.querySelector("#tblProgramAnggaran tbody");
+  const rows = bgRowsForDate(prog);
+  tbody.innerHTML = rows.map((b,i)=>bgRowHtml(b,i+1)).join("") + bgRowHtml(null,0);
+  tbody.querySelectorAll('input[data-f="harga"]').forEach(wireCurrencyInput);
+  bgBind(tbody);
+  bgUpdateTotals(prog);
+  if(focusSpec) bgFocus(tbody, focusSpec.row, focusSpec.field);
+}
+function bgBind(tbody){
+  tbody.oninput = (e)=>{
+    const inp = e.target;
+    if(!inp.dataset || !inp.dataset.f) return;
+    const prog = currentAnggaranProg; if(!prog) return;
+    const tr = inp.closest("tr");
+    let row = bgRowOf(tr, prog);
+    if(!row){
+      if(!String(inp.value).trim()) return;
+      row = newProgramBudgetRow(prog, currentAnggaranTanggal);
+      prog.budgets.push(row);
+      tr.dataset.id = row.id; tr.classList.remove("bg-new");
+      tr.lastElementChild.innerHTML = `<button class="row-del" type="button" data-bgdel tabindex="-1" title="Hapus baris">&times;</button>`;
+      const tmp = document.createElement("tbody");
+      tmp.innerHTML = bgRowHtml(null,0);
+      const newTr = tmp.firstElementChild;
+      tbody.appendChild(newTr);
+      wireCurrencyInput(newTr.querySelector('input[data-f="harga"]'));
+      bgRenumber(tbody);
+    }
+    bgApply(row, inp.dataset.f, inp.value);
+    tr.querySelector('input[data-f="uraian"]').classList.toggle("bg-bad", !String(row.uraian||"").trim());
+    tr.querySelector(".bg-total").textContent = rp((Number(row.volume)||0)*(Number(row.harga)||0));
+    bgUpdateTotals(prog);
+    saveStateToLocalStorage();
+  };
+  tbody.onchange = (e)=>{
+    const inp = e.target;
+    if(!inp.dataset || !inp.dataset.f) return;
+    const prog = currentAnggaranProg; if(!prog) return;
+    const tr = inp.closest("tr");
+    const row = bgRowOf(tr, prog); if(!row) return;
+    const f = inp.dataset.f;
+    if(f==="uraian"){
+      row.uraian = inp.value.trim(); inp.value = row.uraian;
+      inp.classList.toggle("bg-bad", !row.uraian);
+      if(row.uraian && !String(row.satuan||"").trim() && !Number(row.harga)){
+        const h = bgHistoryMap().get(row.uraian.toLowerCase());
+        if(h){
+          row.satuan = h.satuan; row.harga = h.harga;
+          tr.querySelector('input[data-f="satuan"]').value = h.satuan;
+          tr.querySelector('input[data-f="harga"]').value = formatRibuan(h.harga);
+          tr.querySelector(".bg-total").textContent = rp((Number(row.volume)||0)*(Number(row.harga)||0));
+        }
+      }
+    } else if(f==="satuan"){
+      row.satuan = inp.value.trim(); inp.value = row.satuan;
+    } else if(f==="volume"){
+      inp.value = row.volume ? String(row.volume).replace(".",",") : "";
+    }
+    bgUpdateTotals(prog);
+    saveStateToLocalStorage();
+  };
+  tbody.onkeydown = (e)=>{
+    const inp = e.target;
+    if(!inp.dataset || !inp.dataset.f) return;
+    const tr = inp.closest("tr"), f = inp.dataset.f;
+    const move = (dir)=>{
+      const sib = dir>0 ? tr.nextElementSibling : tr.previousElementSibling;
+      const t = sib && sib.querySelector(`input[data-f="${f}"]`);
+      if(t) t.focus();
+    };
+    if(e.key==="Enter"){ e.preventDefault(); move(e.shiftKey ? -1 : 1); }
+    else if((e.key==="ArrowDown" || e.key==="ArrowUp") && (f==="volume" || f==="harga")){ e.preventDefault(); move(e.key==="ArrowDown" ? 1 : -1); }
+    else if(e.key==="Escape"){ inp.blur(); }
+  };
+  tbody.onfocusin = (e)=>{
+    const inp = e.target;
+    if(inp.dataset && inp.dataset.f) setTimeout(()=>{ try{ inp.select(); }catch(_){} }, 0);
+  };
+  tbody.onclick = (e)=>{
+    const btn = e.target.closest ? e.target.closest("[data-bgdel]") : null;
+    if(!btn) return;
+    const prog = currentAnggaranProg; if(!prog) return;
+    const tr = btn.closest("tr");
+    const row = bgRowOf(tr, prog); if(!row) return;
+    const kosong = !String(row.uraian||"").trim() && !Number(row.volume) && !Number(row.harga);
+    if(!kosong && !confirmDelete(`item anggaran "${row.uraian || "(tanpa uraian)"}"`)) return;
+    const idx = [...tbody.querySelectorAll("tr.bg-row")].indexOf(tr);
+    prog.budgets = prog.budgets.filter(b=>b.id!==row.id);
+    renderBudgetGrid(prog, { row:idx, field:"uraian" });
+    saveStateToLocalStorage();
+  };
+  tbody.onpaste = (e)=>{
+    const inp = e.target;
+    if(!inp.dataset || !inp.dataset.f) return;
+    const text = (e.clipboardData || window.clipboardData).getData("text") || "";
+    if(!/[\t\n]/.test(text.replace(/[\r\n]+$/,""))) return;      // satu nilai saja: tempel biasa
+    e.preventDefault();
+    const prog = currentAnggaranProg; if(!prog) return;
+    let grid = text.replace(/\r/g,"").split("\n");
+    while(grid.length && !grid[grid.length-1].trim()) grid.pop();
+    grid = grid.map(l=> l.split("\t").map(c=>c.trim()));
+    // baris judul kolom dari Excel dilewati
+    if(grid.length > 1 && grid[0].some(c=>/^(no\.?|uraian|nama|kebutuhan|volume|vol\.?|qty|jumlah|satuan|harga|total)/i.test(c)) && !grid[0].some(c=>/\d/.test(c))) grid.shift();
+    const startCol = BG_FIELDS.indexOf(inp.dataset.f);
+    // kolom "No" di paling kiri (1,2,3,…) dibuang bila dimulai dari kolom Uraian
+    if(startCol===0 && grid.length && grid.every(r=> r.length>=5 && /^\d+\.?$/.test(r[0]))) grid = grid.map(r=>r.slice(1));
+    const tbody2 = document.querySelector("#tblProgramAnggaran tbody");
+    const trs = [...tbody2.querySelectorAll("tr.bg-row")];
+    const startIdx = trs.indexOf(inp.closest("tr"));
+    const rows = bgRowsForDate(prog);
+    let last = startIdx;
+    grid.forEach((cells,i)=>{
+      if(cells.every(c=>!c)) return;
+      const p = startIdx + i;
+      let row = rows[p];
+      if(!row){ row = newProgramBudgetRow(prog, currentAnggaranTanggal); prog.budgets.push(row); rows.push(row); }
+      cells.forEach((c,j)=>{ const f = BG_FIELDS[startCol+j]; if(f) bgApply(row, f, c, true); });
+      last = p;
+    });
+    renderBudgetGrid(prog, { row:last, field:inp.dataset.f });
+    saveStateToLocalStorage();
+  };
 }
 function resetProgramAnggaranForm(){
   editingBudgetId = null;
@@ -3800,12 +4055,27 @@ function renderAdminPanel(){
       renderProgramTable();
     });
   } else {
-    body.innerHTML = `
+    const bisaPindah = (prog.status === PROGRAM_STATUS.MENUNGGU || prog.status === PROGRAM_STATUS.PERBAIKAN);
+    const sumberRow = bisaPindah ? `<div class="kv-row" style="align-items:center;"><span>Sumber dana program</span><span>
+        <select id="paSumberSel">${SUMBER_KEYS.map(k=>`<option value="${k}" ${k===getProgramSumberKey(prog)?"selected":""}>${SUMBER_META[k].label}</option>`).join("")}</select>
+        <button class="btn small" id="paBtnPindahSumber" type="button">Pindahkan</button></span></div>` : "";
+    body.innerHTML = sumberRow + `
       <div class="modal-actions" style="justify-content:flex-start;">
         <button class="btn primary small" id="paBtnSetujuiPj" type="button">Setujui &amp; Tunjuk PJ</button>
         <button class="btn small" id="paBtnPerbaikan" type="button">Setujui, Perlu Perbaikan</button>
         <button class="btn danger small" id="paBtnTolak" type="button">Tolak</button>
       </div>`;
+    const btnPindah = document.getElementById("paBtnPindahSumber");
+    if(btnPindah) btnPindah.addEventListener("click", ()=>{
+      const baru = document.getElementById("paSumberSel").value;
+      if(baru === getProgramSumberKey(prog)) return;
+      if(moveProgramSumber(prog, baru)){
+        renderProgramTabs(); renderProgramTable(); renderProgramAnggaranModal();
+        saveStateToLocalStorage();
+      } else {
+        document.getElementById("paSumberSel").value = getProgramSumberKey(prog);
+      }
+    });
     document.getElementById("paBtnSetujuiPj").addEventListener("click", ()=> openPjPickModal(prog));
     document.getElementById("paBtnPerbaikan").addEventListener("click", ()=>{
       if(!confirm("Tandai anggaran program ini perlu perbaikan? Guru pengaju akan dapat mengedit kembali.")) return;
